@@ -31,6 +31,13 @@ class NoTagException(Exception):
     def __str__(self):
         return str(self.message)
     
+class NoMessageException(Exception):
+    """Tag does not have a valid message."""
+    def __init__(self, message):
+        self.message = message
+    def __str__(self):
+        return str(self.message)
+    
 class NoPathException(Exception):
     """Tag does not have a path in the DB."""
     def __init__(self, message):
@@ -160,15 +167,21 @@ class NFC_Player:
     player = None
     prev_uuid = -1
     default_directory = False
+    write_mode = False
+    reader_location = None
 
     scan_ascii_msg = "  ___  ___   _   _  _   _____ _   ___ \n / __|/ __| /_\\ | \\| | |_   _/_\\ / __|\n \\__ \\ (__ / _ \\| .` |   | |/ _ \\ (_ |\n |___/\\___/_/ \\_\\_|\\_|   |_/_/ \\_\\___|"
 
-    def __init__(self):
+    def __init__(self, location):
+        if location is None:
+            self.reader_location = "usb"
+        else:
+            self.reader_location = location
         try:
-            self.clf = nfc.ContactlessFrontend('usb')
-            logger.info("Connected to USB NFC reader.")
+            self.clf = nfc.ContactlessFrontend(self.reader_location)
+            logger.info("Connected to NFC reader.")
         except OSError:
-            logger.error("No reader found, if one is present it may be occupied.")
+            logger.error(f"No reader found at {self.reader_location}, if one is present it may be occupied.")
             quit()
         self.player = VLC()
         self.DB = Database()
@@ -258,11 +271,16 @@ class NFC_Player:
             logger.info(f"Added {added} songs to playlist")
 
     def get_uuid_from_tag(self):
+
         if (self.tag is None) or (self.tag.is_present == False):
             raise NoTagException("Tag was not present when looking up UUID.")
         if (self.tag.ndef is None):
-            logger.error(f"No message present on tag.")
-            raise NoTagException("Tag had no NDEF object.")
+            if self.write_mode:
+                logger.info(f"Tag is empty.")
+                return None
+            else:
+                raise NoMessageException()
+        
         logger.debug(f"Getting tag UUID")
         l = message_decoder(self.tag.ndef.octets)
         if len(list(l)) > 0:
@@ -302,14 +320,15 @@ class NFC_Player:
                 print(self.scan_ascii_msg)
                 self.wait_for_tag()
                 uuid_key = self.get_uuid_from_tag()
+                
                 path = None
+                if uuid_key is not None:
+                    try:
+                        path = self.DB.get_path(uuid_key)
+                    except NoPathException:
+                        path = None
 
-                try:
-                    path = self.DB.get_path(uuid_key)
-                except NoPathException:
-                    pass
-
-                if (uuid_key is not None) and (path is not None):
+                if (path is not None):
                     logger.info(f"Tag is already pointing to: {path}")
                     ans = ""
                     while ans.upper() not in ["Y","N"]:
@@ -354,8 +373,10 @@ class NFC_Player:
                 logger.critical(f"Adding entry to DB failed: {str(err)}")
 
 parser = argparse.ArgumentParser(
-                    prog='NFC Media',
+                    prog='NFC Player',
                     description='Physical interface for a digital library.')
+
+parser.add_argument('-l', '--location')
 
 parser.add_argument('-w', '--write',
                     action='store_true')
@@ -366,9 +387,10 @@ def main():
 
     logger.info('Started')
     args = parser.parse_args()
-    NFC_player = NFC_Player()
+    NFC_player = NFC_Player(args.l)
 
     if args.write:
+        NFC_player.write_mode = True
         NFC_player.write_tag(args.default_directory)
     else:
         NFC_player.standby()
