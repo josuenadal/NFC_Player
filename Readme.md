@@ -32,6 +32,9 @@ pip install -r requirements.txt
     - [Write mode](#write-mode)
       - [Writing tags](#writing-tags)
     - [Playback Mode](#playback-mode)
+  - [Library Documentation](#library-documentation)
+    - [nfcpy](#nfcpy)
+    - [pyhton-vlc](#pyhton-vlc)
 
 ## Requirements
 
@@ -116,3 +119,10 @@ python nfc_player.py
 2. Media playing 
 
 ![Image](./readme_images/playing.png)
+
+## Library Documentation
+
+### nfcpy
+- https://nfcpy.readthedocs.io/en/latest/index.html
+### pyhton-vlc
+- https://python-vlc.readthedocs.io/en/latest/
