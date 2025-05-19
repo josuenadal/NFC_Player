@@ -387,7 +387,7 @@ def main():
 
     logger.info('Started')
     args = parser.parse_args()
-    NFC_player = NFC_Player(args.l)
+    NFC_player = NFC_Player(args.location)
 
     if args.write:
         NFC_player.write_mode = True
