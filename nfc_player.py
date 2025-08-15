@@ -14,10 +14,31 @@ import mimetypes
 
 mimetypes.init()
 
+class CustomFormatter(logging.Formatter):
+
+    grey = "\x1b[38;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+    format = "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
+
+    FORMATS = {
+        logging.DEBUG: grey + format + reset,
+        logging.INFO: grey + format + reset,
+        logging.WARNING: yellow + format + reset,
+        logging.ERROR: red + format + reset,
+        logging.CRITICAL: bold_red + format + reset
+    }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
+
 logger = logging.getLogger(__name__)
 stdoutHandler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s | %(name)s | %(levelname)s | %(message)s')
-stdoutHandler.setFormatter(formatter)
+stdoutHandler.setFormatter(CustomFormatter())
 logger.addHandler(stdoutHandler)
 logger.setLevel(logging.DEBUG)
 
@@ -336,6 +357,29 @@ class NFC_Player:
                     continue
                 base_path = os.path.dirname(folder)
         return folder
+
+    def test_folder(self, path):
+        if path is None:
+            return False
+        if os.path.exists(path) is False:
+            return False
+        
+        tracks = 0
+        for file_name in sorted(os.listdir(path)):
+            file = path + "/" + file_name
+            if os.path.isfile(file):
+                mime_type = mimetypes.guess_type(file)[0]
+                if mime_type is not None:
+                    if (self.is_playlist(file) == False) and mime_type.startswith("audio"):
+                        if mime_type:
+                            self.player.add_song(file)
+                            tracks += 1
+        if tracks > 0:
+            logger.info(f"Found {tracks} tracks in folder.")
+            return True
+        else:
+            logger.warning(f"No tracks found in folder.")
+        return False
     
     def write_tag(self, default_directory):
         
@@ -374,7 +418,9 @@ class NFC_Player:
                 
                 # Get folder with music.
                 logger.info("Select media folder...")
-                folder = self.select_media_folder()
+                folder = None
+                while self.test_folder(folder) is False:
+                    folder = self.select_media_folder()
                 
                 # Try to create DB entry.
                 self.DB.create_entry(uuid_key, folder)
