@@ -57,7 +57,7 @@ class Database:
     con = None
     cur = None
     db_ver = 1.0
-    db_name = "NFCPlayer.db"
+    db_name = "NFCPlayer"
 
     def __init__(self):
         # Create DB and tables if DB does not exist.
@@ -166,6 +166,7 @@ class NFC_Player:
     tag = None
     player = None
     prev_uuid = -1
+    GUI = None
     default_directory = False
     write_mode = False
     reader_location = None
@@ -183,6 +184,7 @@ class NFC_Player:
         except OSError:
             logger.error(f"No reader found at {self.reader_location}, if one is present it may be occupied.")
             quit()
+        self.check_for_display()
         self.player = VLC()
         self.DB = Database()
     
@@ -229,12 +231,16 @@ class NFC_Player:
                     time.sleep(0.5)
                 self.player.pause()
                 self.wait_for_tag_to_be_removed()
+            except NoMessageException as NME:
+                logger.error(f"{NME}")
+                time.sleep(2)
+                continue
             except NoTagException as NTE:
                 logger.error(f"{NTE}")
                 continue
             except NoPathException as err:
                 logger.error(f"No path exception: {err}")
-                time.sleep(5)
+                time.sleep(2)
                 continue
             except KeyboardInterrupt:
                 logger.info(f"Quitting...")
@@ -279,7 +285,7 @@ class NFC_Player:
                 logger.info(f"Tag is empty.")
                 return None
             else:
-                raise NoMessageException()
+                raise NoMessageException("Tag doesn't have a valid ID, please try another tag.")
         
         logger.debug(f"Getting tag UUID")
         l = message_decoder(self.tag.ndef.octets)
@@ -294,21 +300,41 @@ class NFC_Player:
         while self.tag.is_present:
             time.sleep(0.5)
 
+    def check_for_display(self):
+        logger.info(f"Checking for display...")
+        if self.GUI is None:
+            if 'DISPLAY' in os.environ:
+                self.GUI = True
+                logger.info(f"Display found.")
+            else:
+                self.GUI = False
+                logger.info(f"Display not found.")
+
     def select_media_folder(self):
         folder = None
         base_path = None
+        if self.GUI:
+            logger.info("Opening file dialog...\nSelect album")
+        
         while folder is None:
-            if self.default_directory is None:
-                folder = filedialog.askdirectory(initialdir = base_path)
+            if self.GUI:
+                if self.default_directory is None:
+                    folder = filedialog.askdirectory(initialdir = base_path)
+                    if type(folder) == list:
+                        folder = None
+                        continue
+                    base_path = os.path.dirname(folder)
+                else:
+                    folder = filedialog.askdirectory(initialdir = self.default_directory)
+                    if type(folder) == list:
+                            folder = None
+                            continue
+            else:
+                folder = input("Input path to media: ")
                 if type(folder) == list:
                     folder = None
                     continue
                 base_path = os.path.dirname(folder)
-            else:
-                folder = filedialog.askdirectory(initialdir = self.default_directory)
-                if type(folder) == list:
-                        folder = None
-                        continue
         return folder
     
     def write_tag(self, default_directory):
@@ -347,7 +373,7 @@ class NFC_Player:
                 self.tag.ndef.records = [TextRecord(uuid_key)]
                 
                 # Get folder with music.
-                logger.info("Opening file dialog...\nSelect album")
+                logger.info("Select media folder...")
                 folder = self.select_media_folder()
                 
                 # Try to create DB entry.
