@@ -14,6 +14,9 @@ import mimetypes
 
 mimetypes.init()
 
+def clear_screen():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
 class CustomFormatter(logging.Formatter):
 
     grey = "\x1b[38;20m"
@@ -41,9 +44,6 @@ stdoutHandler = logging.StreamHandler()
 stdoutHandler.setFormatter(CustomFormatter())
 logger.addHandler(stdoutHandler)
 logger.setLevel(logging.DEBUG)
-
-def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
 
 class NoTagException(Exception):
     """Tag was not present when running operation."""
@@ -194,7 +194,10 @@ class NFC_Player:
 
     scan_ascii_msg = "  ___  ___   _   _  _   _____ _   ___ \n / __|/ __| /_\\ | \\| | |_   _/_\\ / __|\n \\__ \\ (__ / _ \\| .` |   | |/ _ \\ (_ |\n |___/\\___/_/ \\_\\_|\\_|   |_/_/ \\_\\___|"
 
-    def __init__(self, location):
+    def __init__(self, location, display_mode):
+
+        self.GUI = display_mode
+
         if location is None:
             self.reader_location = "usb"
         else:
@@ -205,7 +208,9 @@ class NFC_Player:
         except OSError:
             logger.error(f"No reader found at {self.reader_location}, if one is present it may be occupied.")
             quit()
-        self.check_for_display()
+        
+        self.set_display_mode()
+
         self.player = VLC()
         self.DB = Database()
     
@@ -262,8 +267,11 @@ class NFC_Player:
             except NoPathException as err:
                 logger.error(f"No path exception: {err}")
                 time.sleep(2)
+                logger.info(f"Please remove the tag.")
+                self.wait_for_tag_to_be_removed()
                 continue
             except KeyboardInterrupt:
+                print("\n")
                 logger.info(f"Quitting...")
                 break
         self.player.stop()
@@ -321,15 +329,16 @@ class NFC_Player:
         while self.tag.is_present:
             time.sleep(0.5)
 
-    def check_for_display(self):
-        logger.info(f"Checking for display...")
+    def set_display_mode(self):
         if self.GUI is None:
+            logger.info(f"Checking for display...")
             if 'DISPLAY' in os.environ:
                 self.GUI = True
-                logger.info(f"Display found.")
             else:
                 self.GUI = False
-                logger.info(f"Display not found.")
+        
+        if self.GUI is False:
+            logger.info(f"Terminal only mode.")
 
     def select_media_folder(self):
         folder = None
@@ -337,10 +346,10 @@ class NFC_Player:
         if self.GUI:
             logger.info("Opening file dialog...\nSelect album")
         
-        while folder is None:
+        while (folder is None) or (folder is not "\n"):
             if self.GUI:
                 if self.default_directory is None:
-                    folder = filedialog.askdirectory(initialdir = base_path)
+                    folder = os.path.dirname(filedialog.askdirectory(initialdir = base_path))
                     if type(folder) == list:
                         folder = None
                         continue
@@ -355,13 +364,15 @@ class NFC_Player:
                 if type(folder) == list:
                     folder = None
                     continue
-                base_path = os.path.dirname(folder)
+        folder = os.path.normpath(folder.strip().strip('\''))
         return folder
 
     def test_folder(self, path):
         if path is None:
             return False
+        
         if os.path.exists(path) is False:
+            logger.warning(f"Not a valid path.")
             return False
         
         tracks = 0
@@ -382,7 +393,7 @@ class NFC_Player:
         return False
     
     def write_tag(self, default_directory):
-        
+        self.write_mode = True        
         self.default_directory = default_directory
         
         while True:
@@ -438,6 +449,7 @@ class NFC_Player:
                 logger.error(f"NDEF write failed: {str(err)}")
                 logger.error(f"You probably removed the tag before its UUID could be written.")
             except KeyboardInterrupt:
+                print("\n")
                 logger.info(f"Quitting...")
                 self.player.stop()
                 return
@@ -455,14 +467,16 @@ parser.add_argument('-w', '--write',
 
 parser.add_argument('-d', '--default_directory')
 
+parser.add_argument('-t', '--terminal_only',
+                    action='store_true')
+
 def main():
 
     logger.info('Started')
     args = parser.parse_args()
-    NFC_player = NFC_Player(args.location)
+    NFC_player = NFC_Player(args.location, not args.terminal_only)
 
     if args.write:
-        NFC_player.write_mode = True
         NFC_player.write_tag(args.default_directory)
     else:
         NFC_player.standby()

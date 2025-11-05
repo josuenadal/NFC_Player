@@ -79,6 +79,7 @@ Scan a tag to instantly play all media files in its associated folder.
 | -l | Location of NFC reader device. Default is "usb". |
 | -w | Write Mode. Assign tags to a media folder. |
 | -d | Default media directory (write mode only). |
+| -t | Terminal only mode, no GUI. Must input paths for tags manually. (write mode only) |
 
 ### Write mode
 
