@@ -1,3 +1,4 @@
+from pathlib import Path
 import nfc
 import logging
 import vlc
@@ -7,17 +8,21 @@ import uuid
 import sys
 from ndef import TextRecord
 from ndef import message_decoder
+from operator import xor
 from tkinter import filedialog
+from tkinter import TclError
 import sqlite3
 import argparse
 import mimetypes
+
+_VERSION = "1.0"
 
 mimetypes.init()
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-class CustomFormatter(logging.Formatter):
+class TerminalFormatter(logging.Formatter):
 
     grey = "\x1b[38;20m"
     yellow = "\x1b[33;20m"
@@ -39,11 +44,23 @@ class CustomFormatter(logging.Formatter):
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
 
+class FileFormatter(logging.Formatter):
+
+    fileFormat = "%(asctime)s | %(name)s | %(levelname)s | %(message)s"
+
+    def format(self, record):
+        formatter = logging.Formatter(self.fileFormat)
+        return formatter.format(record)
+
 logger = logging.getLogger(__name__)
+
+fileHandler = logging.FileHandler("nfcp.log")
+fileHandler.setFormatter(FileFormatter())
+logger.addHandler(fileHandler)
+
 stdoutHandler = logging.StreamHandler()
-stdoutHandler.setFormatter(CustomFormatter())
+stdoutHandler.setFormatter(TerminalFormatter())
 logger.addHandler(stdoutHandler)
-logger.setLevel(logging.DEBUG)
 
 class NoTagException(Exception):
     """Tag was not present when running operation."""
@@ -78,12 +95,13 @@ class Database:
     con = None
     cur = None
     db_ver = 1.0
-    db_name = "NFCPlayer"
+    db_file_name = "NFCPlayer.db"
 
     def __init__(self):
+        logger.debug(f"Initializing database.")
         # Create DB and tables if DB does not exist.
-        db_exists = os.path.exists(f"./{self.db_name}")
-        self.con = sqlite3.connect(self.db_name)
+        db_exists = os.path.exists(f"./{self.db_file_name}")
+        self.con = sqlite3.connect(self.db_file_name)
         self.cur = self.con.cursor()
         if db_exists == False:
             logger.info("Creating database...")
@@ -92,9 +110,8 @@ class Database:
             self.cur.execute("CREATE TABLE music(UUID, path)")
             self.con.commit()
             logger.info("Done.")
-
-    def is_not_blank(self, s):
-        return bool(s and not s.isspace())
+        else:
+            logger.info(f"Found NFCPlayer.db.")
     
     def get_path(self, uuid):
         """ Get a path from a DB entry, else return none. """
@@ -108,7 +125,8 @@ class Database:
     
     def create_entry(self, uuid, path):
         """ Add a uuid and a path to the DB. """
-        if (self.is_not_blank(uuid) == False) or (self.is_not_blank(path) == False):
+        if (bool(uuid and not uuid.isspace()) == False) or (bool(path and not path.isspace()) == False):
+            # Entries is/are empty.
             logger.critical(f"DB entry is not valid: {uuid}, {path}")
             raise BadEntryException("Missing UUID or path for DB entry.")
         query = 'INSERT INTO music(uuid, path) VALUES(?, ?)'
@@ -122,16 +140,22 @@ class Database:
         self.con.commit()
 
 class VLC:
-    media_list = None
-    list_player = None
+    
+    MediaPlayer = None
+    MediaList = None
+    MediaListPlayer = None
 
     def __init__(self):
-        self.player = vlc.Instance()
+        logger.debug(f'Initializing VLC Instance')
+        self.Instance = vlc.Instance()
+        self.MediaList = self.Instance.media_list_new()
+        self.MediaListPlayer = self.Instance.media_list_player_new()
+        self.MediaPlayer = self.MediaListPlayer.get_media_player()
 
-    def action_timeout(self, action, desired_state, timeout):
+    def __action_timeout(self, action, desired_state, timeout):
         """ Retry action or throw exception. """
         wait = 0
-        while (self.list_player.get_state() != desired_state) and (wait < timeout):
+        while (self.MediaListPlayer.get_state() != desired_state) and (wait < timeout):
             action()
             time.sleep(0.5)
             wait += 0.5
@@ -142,77 +166,100 @@ class VLC:
                 raise Exception("Error when pausing the playlist.")
             else:
                 raise Exception("Action could not be completed.")
-            
-    def add_playlist(self):
-        self.media_list = self.player.media_list_new()
-        self.list_player = self.player.media_list_player_new()
-        self.list_player.set_media_list(self.media_list)
 
     def clear_playlist(self):
-        self.add_playlist()
+        self.MediaListPlayer.stop()
+        self.MediaList = self.Instance.media_list_new()
 
-    def add_song(self, file):
-        if self.media_list is None:
-            self.add_playlist()
-        self.media_list.add_media(self.player.media_new(file))
-        logger.info(f"Added song to playlist: {os.path.basename(file)}")
+    def add_track_mrls(self, track_list):
+        self.clear_playlist()
+        for track in track_list:
+            logger.debug(f"Adding song {track}")
+            media = self.Instance.media_new(track)
+            media.parse()
+            self.MediaList.add_media(media)
+        self.MediaListPlayer.set_media_list(self.MediaList)
+        logger.debug(f"Added {len(track_list)} songs to playlist")
 
     def play(self):
-        if self.media_list.count() > 0:
-            self.action_timeout(self.list_player.play, vlc.State.Playing, 3)
-            logger.info(f"Playing.")
+        if self.MediaList.count() > 0:
+            try:
+                self.__action_timeout(self.MediaListPlayer.play, vlc.State.Playing, 3)
+                logger.info(f"Playing.")
+            except:
+                logger.warning("Failed to play media player.")
+                self.MediaPlayer.stop()
+
         else:
             logger.info(f"Can't play, no media in playlist.")
 
-    def next(self):
-        self.list_player.next()
-
     def pause(self):
-        if self.list_player.get_state() == vlc.State.Playing:
-            self.action_timeout(self.list_player.pause, vlc.State.Paused, 3)
-            logger.info(f"Paused playlist")
-
-    def previous(self):
-        self.list_player.previous()
+        if self.MediaListPlayer.get_state() == vlc.State.Playing:
+            try:
+                self.__action_timeout(self.MediaListPlayer.pause, vlc.State.Paused, 3)
+                logger.info(f"Paused playlist")
+            except:
+                logger.warning("Failed to pause media player.")
+                self.MediaPlayer.stop()
 
     def stop(self):
-        if self.list_player is not None:
-            self.action_timeout(self.list_player.stop, vlc.State.Stopped, 3)
-            logger.info(f"Stopped")
+        if self.MediaListPlayer is not None:
+            try:
+                self.__action_timeout(self.MediaListPlayer.stop, vlc.State.Stopped, 3)
+                logger.info(f"Stopped")
+            except:
+                logger.warning("Failed to stop media player.")
+                self.MediaPlayer.stop()
 
-class NFC_Player:
+    def next(self):
+        self.MediaListPlayer.next()
+
+    def previous(self):
+        self.MediaListPlayer.previous()
+
+class NFCPlayer:
 
     DB = None
+    VLC = None
     clf = None
     tag = None
-    player = None
     prev_uuid = -1
-    GUI = None
     default_directory = False
-    write_mode = False
-    reader_location = None
+    _GUI_MODE = None
+    _WRITE_MODE = False
+    _BATCH_MODE = False
+    batch_dirs = []
 
     scan_ascii_msg = "  ___  ___   _   _  _   _____ _   ___ \n / __|/ __| /_\\ | \\| | |_   _/_\\ / __|\n \\__ \\ (__ / _ \\| .` |   | |/ _ \\ (_ |\n |___/\\___/_/ \\_\\_|\\_|   |_/_/ \\_\\___|"
+    success_ascii_msg = " ___ _   _  ___ ___ ___  ___ ___ \n/ __| | | |/ __/ __/ _ \\/ __/ __|\n\\__ \\ |_| | (_| (_|  __/\\__ \\__ \\\n|___/\\__,_|\\___\\___\\___||___/___/"
+    qs_ascii_msg = " ________   ________           ________  ________  ________  ________           _________  ________  ________     \n|\\   __  \\ |\\   ____\\         |\\   ____\\|\\   ____\\|\\   __  \\|\\   ___  \\        |\\___   ___\\\\   __  \\|\\   ____\\    \n\\ \\  \\|\\  \\\\ \\  \\___|_        \\ \\  \\___|\\ \\  \\___|\\ \\  \\|\\  \\ \\  \\\\ \\  \\       \\|___ \\  \\_\\ \\  \\|\\  \\ \\  \\___|    \n \\ \\  \\\\\\  \\\\ \\_____  \\        \\ \\_____  \\ \\  \\    \\ \\   __  \\ \\  \\\\ \\  \\           \\ \\  \\ \\ \\   __  \\ \\  \\  ___  \n  \\ \\  \\\\\\  \\\\|____|\\  \\        \\|____|\\  \\ \\  \\____\\ \\  \\ \\  \\ \\  \\\\ \\  \\           \\ \\  \\ \\ \\  \\ \\  \\ \\  \\|\\  \\ \n   \\ \\_____  \\ ____\\_\\  \\         ____\\_\\  \\ \\_______\\ \\__\\ \\__\\ \\__\\\\ \\__\\           \\ \\__\\ \\ \\__\\ \\__\\ \\_______\\\n    \\|___| \\__\\\\_________\\       |\\_________\\|_______|\\|__|\\|__|\\|__| \\|__|            \\|__|  \\|__|\\|__|\\|_______|\n          \\|__\\|_________|       \\|_________|                                                                     \n                                                                                                                  \n"
 
     def __init__(self, location, display_mode):
-
-        self.GUI = display_mode
-
-        if location is None:
-            self.reader_location = "usb"
-        else:
-            self.reader_location = location
+        logger.info(f"Initializing NFC Player.")
+        logger.debug(f"Looking for NFC card reader at '{location}'")
         try:
-            self.clf = nfc.ContactlessFrontend(self.reader_location)
+            self.clf = nfc.ContactlessFrontend(location)
             logger.info("Connected to NFC reader.")
         except OSError:
-            logger.error(f"No reader found at {self.reader_location}, if one is present it may be occupied.")
+            logger.error(f"No reader found at '{location}', if one is present it may be occupied.")
+            logger.info(f"Quitting...")
             quit()
         
-        self.set_display_mode()
+        logger.debug(f"Display mode set to {display_mode}")
+        self._GUI_MODE = display_mode
+        self.set_app_display_mode()
 
-        self.player = VLC()
+        self.VLC = VLC()
+        self.__set_events()
         self.DB = Database()
+        logger.debug(f"NFC Player initialized.")
+    
+    def __set_events(self):
+        # MLP_events = self.VLC.MediaListPlayer.event_manager()
+        MP_events = self.VLC.MediaPlayer.event_manager()
+        MP_events.event_attach(vlc.EventType.MediaPlayerPlaying, self.print_state_and_curr_track)
+        MP_events.event_attach(vlc.EventType.MediaPlayerPaused, self.print_state_and_curr_track)
+        MP_events.event_attach(vlc.EventType.MediaPlayerMediaChanged , self.print_state_and_curr_track)
     
     def wait_for_tag(self):
         rdwr_options = {
@@ -229,34 +276,39 @@ class NFC_Player:
             self.tag = tag
 
     def on_connect(self, tag):
-        logger.debug(f"Connected to tag {tag}")
+        logger.info("Connected to tag.")
+        logger.debug(f"Tag: {tag}")
 
     def on_startup(self, targets):
         for target in targets:
             target.sensf_req = bytearray.fromhex("0012FC0000")
         return targets
     
-    def is_new_tag(self, uuid):
+    def is_tag_different_from_prev(self, uuid):
         ans = (uuid != self.prev_uuid)
         self.prev_uuid = uuid
         return ans
     
     def standby(self):
+        logger.debug(f"Going into standby mode.")
+        print(f"NFC Music Player {_VERSION}, ready to play.")
         while True:
             try:
                 self.wait_for_tag()
                 uuid = self.get_uuid_from_tag()
                 path = self.DB.get_path(uuid)
-                if self.is_new_tag(uuid):
+                if self.is_tag_different_from_prev(uuid):
                     # If tag is not the previous tag, clear playlist and add new music.
-                    self.add_folder_to_playlist(path)
+                    self.add_tracks_to_playlist(path)
                 else:
                     logger.info("Continuing.")
-                self.player.play()
-                while (self.player.list_player.get_state() == vlc.State.Playing) and (self.tag.is_present):
-                    time.sleep(0.5)
-                self.player.pause()
-                self.wait_for_tag_to_be_removed()
+                self.VLC.play()
+
+                while (self.VLC.MediaListPlayer.get_state() == vlc.State.Playing) and (self.tag.is_present):
+                    time.sleep(0.25)
+                
+                self.VLC.pause()
+                
             except NoMessageException as NME:
                 logger.error(f"{NME}")
                 time.sleep(2)
@@ -270,11 +322,40 @@ class NFC_Player:
                 logger.info(f"Please remove the tag.")
                 self.wait_for_tag_to_be_removed()
                 continue
+            except FileNotFoundError:
+                logger.error(f"The path was not located, try another tag or rewrite this tag with a valid media path.")
+                self.wait_for_tag_to_be_removed()
+                continue
             except KeyboardInterrupt:
+                self.VLC.MediaPlayer.stop()
                 print("\n")
                 logger.info(f"Quitting...")
                 break
-        self.player.stop()
+        self.VLC.stop()
+
+    def print_state_and_curr_track(self, event=""):
+        logger.debug(f"MediaListPlayerState: {self.VLC.MediaListPlayer.get_state()}")
+        state = ""
+        if stdoutHandler.level not in [logging.INFO, logging.DEBUG]:
+            self.delete_last_line()
+            end = "\r"
+        else:
+            end = "\n"
+        if self.VLC.MediaListPlayer.get_state() == vlc.State.Playing:
+            state = "▶"
+        elif self.VLC.MediaListPlayer.get_state() == vlc.State.Paused:
+            state = "⏸"
+        elif self.VLC.MediaListPlayer.get_state() == vlc.State.Stopped:
+            state = "■"
+        media = self.VLC.MediaPlayer.get_media()
+        if media is None:
+            print(state, end=end)
+        else:
+            print(f"{state} {media.get_meta(0)} - {media.get_meta(1)}", end=end)
+            
+    def delete_last_line(self):
+        sys.stdout.write('\x1b[2K')
+        sys.stdout.flush()
 
     def is_playlist(self, file):
         ext =  os.path.splitext(file)[1]
@@ -282,135 +363,133 @@ class NFC_Player:
             return True
         return False
 
-    def get_playlist(self, path):
-        for file in sorted(os.listdir(path)):
-            if self.is_playlist(file):
-                return os.path.normpath(path + "/" + file)
-        return None
+    def is_audio_track(self, file):
+        if os.path.isfile(file):
+            mime_type = mimetypes.guess_type(file)[0]
+            if (mime_type is not None) and (self.is_playlist(file) == False) and mime_type.startswith("audio"):
+                logger.debug(f"{file} is an audio track.")
+                return True
+            else:
+                logger.debug(f"{file} is not an audio track.")
 
-    def add_folder_to_playlist(self, path):
-        self.player.clear_playlist()
-        if os.path.isfile(path):
-            self.player.add_song(path)
+    def add_tracks_to_playlist(self, directory):
+        if os.path.isfile(directory):
+            self.VLC.add_track_mrls(directory)
         else:
-            added = 0      
-            for file_name in sorted(os.listdir(path)):
-                file = path + "/" + file_name
-                if os.path.isfile(file):
-                    mime_type = mimetypes.guess_type(file)[0]
-                    if mime_type is not None:
-                        if (self.is_playlist(file) == False) and mime_type.startswith("audio"):
-                            if mime_type:
-                                self.player.add_song(file)
-                                added += 1
-            logger.info(f"Added {added} songs to playlist")
+            track_list = []
+            for file_name in sorted(os.listdir(directory)):
+                file = os.path.join(directory, file_name)
+                if self.is_audio_track(file):
+                    track_list.append(file)
+            self.VLC.add_track_mrls(track_list)
+            logger.info(f"Added {len(track_list)} songs to playlist")
 
     def get_uuid_from_tag(self):
-
         if (self.tag is None) or (self.tag.is_present == False):
             raise NoTagException("Tag was not present when looking up UUID.")
         if (self.tag.ndef is None):
-            if self.write_mode:
+            if self._WRITE_MODE:
                 logger.info(f"Tag is empty.")
                 return None
             else:
                 raise NoMessageException("Tag doesn't have a valid ID, please try another tag.")
         
-        logger.debug(f"Getting tag UUID")
+        logger.info(f"Getting tag UUID")
         l = message_decoder(self.tag.ndef.octets)
         if len(list(l)) > 0:
             uuid = list(message_decoder(self.tag.ndef.octets))[0].text
-            logger.info(f"Tag UUID: {uuid}")
+            logger.debug(f"Tag UUID: {uuid}")
             return uuid
         else:
             return None
         
     def wait_for_tag_to_be_removed(self):
+        logger.info(f"Waiting for tag to be removed.")
         while self.tag.is_present:
-            time.sleep(0.5)
+            time.sleep(0.35)
 
-    def set_display_mode(self):
-        if self.GUI is None:
+    def set_app_display_mode(self):
+        if self._GUI_MODE is False:
+            logger.info(f"Terminal only mode.")
+        elif self._GUI_MODE is None:
             logger.info(f"Checking for display...")
             if 'DISPLAY' in os.environ:
-                self.GUI = True
+                self._GUI_MODE = True
             else:
-                self.GUI = False
-        
-        if self.GUI is False:
-            logger.info(f"Terminal only mode.")
+                self._GUI_MODE = False
 
-    def select_media_folder(self):
-        folder = None
-        base_path = None
-        if self.GUI:
-            logger.info("Opening file dialog...\nSelect album")
+    def select_media_directory(self):
+        directory = None
+        if self._GUI_MODE:
+            logger.info("Opening file dialog...")
         
-        while (folder is None) or (folder is not "\n"):
-            if self.GUI:
-                if self.default_directory is None:
-                    folder = os.path.dirname(filedialog.askdirectory(initialdir = base_path))
-                    if type(folder) == list:
-                        folder = None
-                        continue
-                    base_path = os.path.dirname(folder)
-                else:
-                    folder = filedialog.askdirectory(initialdir = self.default_directory)
-                    if type(folder) == list:
-                            folder = None
-                            continue
-            else:
-                folder = input("Input path to media: ")
-                if type(folder) == list:
-                    folder = None
+        while directory is None:
+            if self._GUI_MODE:
+                try:
+                    directory = filedialog.askdirectory(initialdir= self.default_directory)
+                except TypeError:
+                    directory = None
                     continue
-        folder = os.path.normpath(folder.strip().strip('\''))
-        return folder
+                except (TclError, RuntimeError) as e:
+                    self._GUI_MODE = False
+                    logger.warning(f"Could not open file dialog. Falling back to terminal only mode.")
+                    logger.debug(f"{e}")
+                    directory = None
+                    continue
+            else:
+                directory = input("Input path to media: ")
+                if directory == "\n" or directory == "":
+                    directory = None
+                    continue
+        directory = os.path.normpath(os.path.expanduser(directory.strip().strip('\'')))
+        logger.debug(f"Selected {directory}")
+        return directory
 
-    def test_folder(self, path):
+    def check_if_directory_contains_media(self, path):
         if path is None:
             return False
-        
         if os.path.exists(path) is False:
             logger.warning(f"Not a valid path.")
             return False
-        
+
         tracks = 0
         for file_name in sorted(os.listdir(path)):
-            file = path + "/" + file_name
-            if os.path.isfile(file):
-                mime_type = mimetypes.guess_type(file)[0]
-                if mime_type is not None:
-                    if (self.is_playlist(file) == False) and mime_type.startswith("audio"):
-                        if mime_type:
-                            self.player.add_song(file)
-                            tracks += 1
+            file = os.path.join(path, file_name)
+            if self.is_audio_track(file):
+                tracks += 1
         if tracks > 0:
-            logger.info(f"Found {tracks} tracks in folder.")
+            print(f"Found {tracks} tracks in directory {path}.")
             return True
         else:
-            logger.warning(f"No tracks found in folder.")
+            logger.warning(f"No tracks found in directory.")
         return False
     
-    def write_tag(self, default_directory):
-        self.write_mode = True        
+    def write_tags(self, default_directory):
+        print(f"NFC Music Player {_VERSION}, ready to write.")
+        self._WRITE_MODE = True        
         self.default_directory = default_directory
         
-        while True:
+        while True and not xor(bool(self._BATCH_MODE), bool(len(self.batch_dirs) > 0)):
             try:
-                print(self.scan_ascii_msg)
+                if self._BATCH_MODE:
+                    print(f"Assigning {self.batch_dirs[-1]}")
+                    print(self.scan_ascii_msg)
+                    print(f"Or skip with Ctrl+c")
+                else:
+                    print(self.scan_ascii_msg)
+
                 self.wait_for_tag()
                 uuid_key = self.get_uuid_from_tag()
                 
-                path = None
+                directory = None
                 if uuid_key is not None:
                     try:
-                        path = self.DB.get_path(uuid_key)
+                        directory = self.DB.get_path(uuid_key)
                     except NoPathException:
-                        path = None
+                        directory = None
 
-                if (path is not None):
-                    logger.info(f"Tag is already pointing to: {path}")
+                if (directory is not None):
+                    print(f"Tag is already pointing to: {directory}")
                     ans = ""
                     while ans.upper() not in ["Y","N"]:
                         ans = input("Do you want to overwrite this tag Y/N: ")
@@ -421,24 +500,32 @@ class NFC_Player:
                     else:
                         self.DB.remove_entry(uuid_key)
 
-                # Get random UUID
+                # Get random UUID.
                 uuid_key = "NFCMP_" + str(uuid.uuid4())
+                
+                # Prompt user to select/input a media directory.
+                if self._BATCH_MODE is False:
+                    logger.info("Prompting user to select/input media directory.")
+                    directory = None
+                    while self.check_if_directory_contains_media(directory) is False:
+                        directory = self.select_media_directory()
+                else:
+                    directory = self.batch_dirs.pop()
 
-                # Try to write tag.
+
+                
+                # Try to write the uuid to the tag.
                 self.tag.ndef.records = [TextRecord(uuid_key)]
-                
-                # Get folder with music.
-                logger.info("Select media folder...")
-                folder = None
-                while self.test_folder(folder) is False:
-                    folder = self.select_media_folder()
-                
+
                 # Try to create DB entry.
-                self.DB.create_entry(uuid_key, folder)
-                logger.info(f"Succesfully added entry to DB : {uuid_key},{folder}")
+                self.DB.create_entry(uuid_key, directory)
+                logger.info(f"Succesfully added entry to DB: \n\t{uuid_key},\n\t{directory}")
+
+                print(self.success_ascii_msg)
+                print("Succesfully assigned media to tag.")
 
                 # Done, wait for tag to be removed.
-                logger.info(f"Done writing, please remove.")
+                print("Waiting for tag to be removed...")
                 self.wait_for_tag_to_be_removed()
 
             except NoTagException as NTE:
@@ -449,37 +536,99 @@ class NFC_Player:
                 logger.error(f"NDEF write failed: {str(err)}")
                 logger.error(f"You probably removed the tag before its UUID could be written.")
             except KeyboardInterrupt:
+                if self._BATCH_MODE:
+                    try:
+                        ans = ""
+                        while ans.upper() not in ["Y","N"]:
+                            ans = input(f"Would you like to skip writing to {self.batch_dirs[-1]} Y/N:")
+                        if (ans.upper() == "Y"):
+                            self.batch_dirs.pop()
+                            print("\n")
+                            continue
+                        else:
+                            continue
+                    except KeyboardInterrupt:
+                        pass
                 print("\n")
+                print("Quitting...")
                 logger.info(f"Quitting...")
-                self.player.stop()
+                self.VLC.stop()
                 return
             except BadEntryException as err:
                 logger.critical(f"Adding entry to DB failed: {str(err)}")
+    
+    def init_batch_mode_mode(self, directories_file):
+        print("Started in Batch Write Mode.")
+        logger.info(f"Path given: {directories_file}")
+        self. _BATCH_MODE = True
+        self.load_batch_directories_file(directories_file)
+        if self.batch_dirs == 0:
+            logger.error(f"No valid directories found in batch write file.")
+            quit()
+
+    def load_batch_directories_file(self, file):
+        f = open(os.path.realpath(os.path.expanduser(file)), 'r')
+        logger.debug(os.path.realpath(os.path.expanduser(file)))
+        for line in f:
+            if os.path.exists(os.path.expanduser(line.strip())):
+                self.batch_dirs.append(os.path.expanduser(line.strip()))
+        logger.info(f"Found {len(self.batch_dirs)} paths")
 
 parser = argparse.ArgumentParser(
                     prog='NFC Player',
                     description='Physical interface for a digital library.')
 
-parser.add_argument('-l', '--location')
+parser.add_argument('-l', '--location',
+                    help='Path to NFC reader. Defaults to \'usb\'.', default='usb')
 
 parser.add_argument('-w', '--write',
+                    help='Write mode. Allows you to write to a tag. Press CTRL+C to quit.',
                     action='store_true')
 
-parser.add_argument('-d', '--default_directory')
+parser.add_argument('-f', '--default_directory',
+                    help='Path to open file dialog in.')
 
 parser.add_argument('-t', '--terminal_only',
+                    help='No GUI elements (no file dialog).',
                     action='store_true')
 
-def main():
+parser.add_argument('-b', '--batch_mode',
+                    help='Write tags sequentially from a file containing a list of directories.',
+                    default=None, dest="batch_mode_dir")
 
-    logger.info('Started')
-    args = parser.parse_args()
-    NFC_player = NFC_Player(args.location, not args.terminal_only)
+parser.add_argument('-d', '--debug',
+                    help='For debugging output.',
+                    action="store_const", dest="log_level", const=logging.DEBUG, default=logging.WARNING)
+
+parser.add_argument('-v', '--verbose',
+                    help='For verbose output.',
+                    action="store_const", dest="log_level", const=logging.INFO)
+
+args = parser.parse_args()
+
+    
+def main():
+    # Set whole logger to lowest level to enable different log levenls.
+    # And fileHandler to verbose unless debug is enabled.
+    logger.setLevel(level=logging.DEBUG)
+    if args.log_level == logging.DEBUG:
+        fileHandler.setLevel(level=logging.DEBUG)
+    else:
+        fileHandler.setLevel(level=logging.INFO)
+    stdoutHandler.setLevel(level=args.log_level)
+    clear_screen()
+    logger.info('Started app')
+    NFC_player = NFCPlayer(args.location, not args.terminal_only)
 
     if args.write:
-        NFC_player.write_tag(args.default_directory)
+        NFC_player.write_tags(args.default_directory)
+    elif args.batch_mode_dir is not None:
+        NFC_player.init_batch_mode_mode(args.batch_mode_dir)
+        NFC_player.write_tags(args.default_directory)
     else:
         NFC_player.standby()
+    
+    print("Bye")
     logger.info("Done")
 
 if __name__ == '__main__': 

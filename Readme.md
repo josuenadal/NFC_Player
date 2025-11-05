@@ -4,9 +4,10 @@ Create a physical interface for your digital media library using NFC technology.
 
 ## Features
 - Instant media playback by scanning NFC tags
-- Simple tag-to-folder association
-- Cross platform support (Windows/Linux/macOS)
-- Lightweight Python implementation
+- Simple tag-to-folder or tag-to-file association
+- Place tag on reader to play media, remove tag to stop
+- Cross platform support
+- Batch write a bunch of tags at once
 
 ## Installation
 ```bash
@@ -32,6 +33,7 @@ pip install -r requirements.txt
     - [Write mode](#write-mode)
       - [Writing tags](#writing-tags)
     - [Playback Mode](#playback-mode)
+    - [Batch Write Mode](#batch-write-mode)
   - [Library Documentation](#library-documentation)
     - [nfcpy](#nfcpy)
     - [pyhton-vlc](#pyhton-vlc)
@@ -78,8 +80,11 @@ Scan a tag to instantly play all media files in its associated folder.
 |---|---|
 | -l | Location of NFC reader device. Default is "usb". |
 | -w | Write Mode. Assign tags to a media folder. |
-| -d | Default media directory (write mode only). |
-| -t | Terminal only mode, no GUI. Must input paths for tags manually. (write mode only) |
+| -f | Default media directory for directory dialog box (write mode only). |
+| -t | Terminal only mode, no dialog box for selecting directory. Must input directories for tags manually. |
+| -b | Batch write mode. Load a list of media directories and assign tags to them. |
+| -v | Verbose output. |
+| -d | Debug output. |
 
 ### Write mode
 
@@ -87,7 +92,7 @@ Scan a tag to instantly play all media files in its associated folder.
 2. Run in write mode:
 
 ```bash
-python nfc_player.py -w -d "~/path/to/your/media/library/"
+python nfc_player.py -w -f "~/path/to/your/media/library/"
 ```
 
 3. Follow the on-screen prompts
@@ -120,6 +125,17 @@ python nfc_player.py
 2. Media playing 
 
 ![Image](./readme_images/playing.png)
+
+### Batch Write Mode
+ 
+This mode allows you to quickly write to a bunch of tags.
+
+1. Prepare a file with media directories separated by newlines.
+2. Start program in quick scan mode with the ```-b``` flag followed by the location of your file.
+3. Scan tag until you see the success message.
+4. Repeat with next tag.
+
+*If you want to skip a specific directory press __*
 
 ## Library Documentation
 
