@@ -123,6 +123,11 @@ class Database:
             logger.info(f"Found {path}")
         return path
     
+    def get_all_paths(self):
+        """ Get all paths from DB entry, else return none. """
+        res = self.cur.execute("SELECT path FROM music").fetchall()
+        return res
+
     def create_entry(self, uuid, path):
         """ Add a uuid and a path to the DB. """
         if (bool(uuid and not uuid.isspace()) == False) or (bool(path and not path.isspace()) == False):
@@ -151,6 +156,8 @@ class VLC:
         self.MediaList = self.Instance.media_list_new()
         self.MediaListPlayer = self.Instance.media_list_player_new()
         self.MediaPlayer = self.MediaListPlayer.get_media_player()
+
+        self.MediaPlayer.video_set_key_input(True)
 
     def __action_timeout(self, action, desired_state, timeout):
         """ Retry action or throw exception. """
@@ -228,22 +235,26 @@ class NFCPlayer:
     _GUI_MODE = None
     _WRITE_MODE = False
     _BATCH_MODE = False
+    _CHECK_MODE = False
     batch_dirs = []
 
     scan_ascii_msg = "  ___  ___   _   _  _   _____ _   ___ \n / __|/ __| /_\\ | \\| | |_   _/_\\ / __|\n \\__ \\ (__ / _ \\| .` |   | |/ _ \\ (_ |\n |___/\\___/_/ \\_\\_|\\_|   |_/_/ \\_\\___|"
     success_ascii_msg = " ___ _   _  ___ ___ ___  ___ ___ \n/ __| | | |/ __/ __/ _ \\/ __/ __|\n\\__ \\ |_| | (_| (_|  __/\\__ \\__ \\\n|___/\\__,_|\\___\\___\\___||___/___/"
     qs_ascii_msg = " ________   ________           ________  ________  ________  ________           _________  ________  ________     \n|\\   __  \\ |\\   ____\\         |\\   ____\\|\\   ____\\|\\   __  \\|\\   ___  \\        |\\___   ___\\\\   __  \\|\\   ____\\    \n\\ \\  \\|\\  \\\\ \\  \\___|_        \\ \\  \\___|\\ \\  \\___|\\ \\  \\|\\  \\ \\  \\\\ \\  \\       \\|___ \\  \\_\\ \\  \\|\\  \\ \\  \\___|    \n \\ \\  \\\\\\  \\\\ \\_____  \\        \\ \\_____  \\ \\  \\    \\ \\   __  \\ \\  \\\\ \\  \\           \\ \\  \\ \\ \\   __  \\ \\  \\  ___  \n  \\ \\  \\\\\\  \\\\|____|\\  \\        \\|____|\\  \\ \\  \\____\\ \\  \\ \\  \\ \\  \\\\ \\  \\           \\ \\  \\ \\ \\  \\ \\  \\ \\  \\|\\  \\ \n   \\ \\_____  \\ ____\\_\\  \\         ____\\_\\  \\ \\_______\\ \\__\\ \\__\\ \\__\\\\ \\__\\           \\ \\__\\ \\ \\__\\ \\__\\ \\_______\\\n    \\|___| \\__\\\\_________\\       |\\_________\\|_______|\\|__|\\|__|\\|__| \\|__|            \\|__|  \\|__|\\|__|\\|_______|\n          \\|__\\|_________|       \\|_________|                                                                     \n                                                                                                                  \n"
 
-    def __init__(self, location, display_mode):
+    def __init__(self, location, display_mode, check_paths_mode = False):
         logger.info(f"Initializing NFC Player.")
         logger.debug(f"Looking for NFC card reader at '{location}'")
-        try:
-            self.clf = nfc.ContactlessFrontend(location)
-            logger.info("Connected to NFC reader.")
-        except OSError:
-            logger.error(f"No reader found at '{location}', if one is present it may be occupied.")
-            logger.info(f"Quitting...")
-            quit()
+
+        self._CHECK_MODE = check_paths_mode
+        if self._CHECK_MODE == False:
+            try:
+                self.clf = nfc.ContactlessFrontend(location)
+                logger.info("Connected to NFC reader.")
+            except OSError:
+                logger.error(f"No reader found at '{location}', if one is present it may be occupied.")
+                logger.info(f"Quitting...")
+                quit()
         
         logger.debug(f"Display mode set to {display_mode}")
         self._GUI_MODE = display_mode
@@ -449,7 +460,8 @@ class NFCPlayer:
         if path is None:
             return False
         if os.path.exists(path) is False:
-            logger.warning(f"Not a valid path.")
+            if self._CHECK_MODE == False:
+                logger.warning(f"Not a valid path.")
             return False
 
         tracks = 0
@@ -458,10 +470,12 @@ class NFCPlayer:
             if self.is_audio_track(file):
                 tracks += 1
         if tracks > 0:
-            print(f"Found {tracks} tracks in directory {path}.")
+            if self._CHECK_MODE == False:
+                print(f"Found {tracks} tracks in directory {path}.")
             return True
         else:
-            logger.warning(f"No tracks found in directory.")
+            if self._CHECK_MODE == False:
+                logger.warning(f"No tracks found in directory.")
         return False
     
     def write_tags(self, default_directory):
@@ -574,6 +588,12 @@ class NFCPlayer:
                 self.batch_dirs.append(os.path.expanduser(line.strip()))
         logger.info(f"Found {len(self.batch_dirs)} paths")
 
+    def check_paths(self):
+        paths = self.DB.get_all_paths()
+        for path in paths:
+            if self.check_if_directory_contains_media(path[0]) == False:
+                print(path[0])
+
 parser = argparse.ArgumentParser(
                     prog='NFC Player',
                     description='Physical interface for a digital library.')
@@ -595,6 +615,10 @@ parser.add_argument('-t', '--terminal_only',
 parser.add_argument('-b', '--batch_mode',
                     help='Write tags sequentially from a file containing a list of directories.',
                     default=None, dest="batch_mode_dir")
+
+parser.add_argument('-c', '--check_paths',
+                    help='Check if paths in the database are valid, real and contain media. Write them to stdout.',
+                    action='store_true')
 
 parser.add_argument('-d', '--debug',
                     help='For debugging output.',
@@ -618,13 +642,17 @@ def main():
     stdoutHandler.setLevel(level=args.log_level)
     clear_screen()
     logger.info('Started app')
-    NFC_player = NFCPlayer(args.location, not args.terminal_only)
+    NFC_player = NFCPlayer(args.location, not args.terminal_only, args.check_paths)
 
     if args.write:
         NFC_player.write_tags(args.default_directory)
+        NFC_player.standby()
     elif args.batch_mode_dir is not None:
         NFC_player.init_batch_mode_mode(args.batch_mode_dir)
         NFC_player.write_tags(args.default_directory)
+        NFC_player.standby()
+    elif args.check_paths:
+        NFC_player.check_paths()
     else:
         NFC_player.standby()
     

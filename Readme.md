@@ -83,6 +83,7 @@ Scan a tag to instantly play all media files in its associated folder.
 | -f | Default media directory for directory dialog box (write mode only). |
 | -t | Terminal only mode, no dialog box for selecting directory. Must input directories for tags manually. |
 | -b | Batch write mode. Load a list of media directories and assign tags to them. |
+| -c | Check if paths in DB are valid and contain media, and print invalid/empty paths. |
 | -v | Verbose output. |
 | -d | Debug output. |
 
