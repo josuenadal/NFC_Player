@@ -4,6 +4,7 @@ from ndef import TextRecord
 from ndef import message_decoder
 from operator import xor
 from tkinter import filedialog, TclError
+import keyboard
 
 _VERSION = "1.0"
 
@@ -181,6 +182,14 @@ class VLC:
         self.MediaListPlayer.set_playback_mode(vlc.PlaybackMode.default)
         logger.debug(f"Added {len(track_list)} songs to playlist")
 
+    def play_pause(self):
+        if self.MediaListPlayer is None:
+            return
+        if self.MediaListPlayer.is_playing():
+            self.pause()
+        elif self.MediaListPlayer.is_playing() == False:
+            self.play()
+
     def play(self):
         if self.MediaList.count() > 0:
             try:
@@ -313,6 +322,15 @@ class NFCPlayer:
         self.VLC = VLC()
         self.__set_events()
         self.DB = Database()
+        # Hotkeys
+        try:
+            keyboard.add_hotkey(165,self.VLC.previous)
+            keyboard.add_hotkey(164,self.VLC.play_pause)
+            keyboard.add_hotkey(163,self.VLC.next)
+        except ImportError:
+            logger.debug("Could not add hotkeys due to not being root.")
+            pass
+
         logger.debug(f"NFC Player initialized.")
 
     def __set_events(self):
@@ -351,6 +369,15 @@ class NFCPlayer:
             print(state, end=end)
         else:
             print(f"{state} {media.get_meta(0)} - {media.get_meta(1)}", end=end)
+    
+    def on_key_press(self, key):
+        match(key):
+            case keyboard.Key.HotKey.media_next:
+                self.VLC.next()
+            case keyboard.Key.HotKey.media_previous:
+                self.VLC.previous
+            case keyboard.Key.HotKey.media_play_pause:
+                self.VLC.play_pause()
 
     def quit_player(self):
         print()
