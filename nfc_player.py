@@ -1,10 +1,9 @@
 from dataclasses import dataclass
-import nfc, logging, vlc, os, time, uuid, sys, sqlite3, argparse, mimetypes
+import nfc, logging, os, time, uuid, sys, sqlite3, argparse, mimetypes, pexpect
 from ndef import TextRecord
 from ndef import message_decoder
 from operator import xor
 from tkinter import filedialog, TclError
-import keyboard
 
 _VERSION = "1.0"
 
@@ -104,13 +103,14 @@ class Database:
         else:
             logger.info(f"Found NFCPlayer.db.")
     
-    def get_path(self, uuid):
+    def get_path(self, uuid, supress_warnings = False):
         """ Get a path from a DB entry, else return none. """
         if uuid is None:
             return None
         res = self.cur.execute("SELECT path FROM music WHERE uuid=:uuid", {'uuid': uuid}).fetchone()
         if res == None:
-            logger.warning("DB does not contain a path for this tags UUID.")
+            if supress_warnings == False:
+                logger.warning("DB does not contain a path for this tags UUID.")
             return None
         else:
             path = os.path.normpath(res[0])
@@ -139,92 +139,45 @@ class Database:
         self.con.commit()
 
 class VLC:
-    
-    MediaPlayer = None
-    MediaList = None
-    MediaListPlayer = None
-
+    process = None
     def __init__(self):
-        logger.debug(f'Initializing VLC Instance')
-        self.Instance = vlc.Instance()
-        self.MediaList = self.Instance.media_list_new()
-        self.MediaListPlayer = self.Instance.media_list_player_new()
-        self.MediaPlayer = self.MediaListPlayer.get_media_player()
-        self.MediaPlayer.video_set_key_input(True)
+        self.process = pexpect.spawn("vlc")
+    
+    def kill(self):
+        logger.debug("Sending quit command")
+        self.process.sendline("q")
+        self.process.kill(0)
 
-    def __action_timeout(self, action, desired_state, timeout):
-        """ Retry action or throw exception. """
-        wait = 0
-        while (self.MediaListPlayer.get_state() != desired_state) and (wait < timeout):
-            action()
-            time.sleep(0.5)
-            wait += 0.5
-        if wait >= timeout:
-            if desired_state == vlc.State.Playing:
-                raise Exception("Error when playing the playlist.")
-            if desired_state == vlc.State.Paused:
-                raise Exception("Error when pausing the playlist.")
-            else:
-                raise Exception("Action could not be completed.")
+    def play(self):
+        logger.debug("Sending play command")
+        self.process.sendline("play")
+        # Keep this call to VLC.get_state(), it prods VLC into playing.
+        self.get_state()
+
+    def pause(self):
+        logger.debug("Sending pause command")
+        if( self.get_state() == "playing" ):
+            self.process.sendline("pause")
+        logger.debug("Already in a paused/stopped state")
 
     def clear_playlist(self):
-        self.MediaListPlayer.stop()
-        self.MediaList = self.Instance.media_list_new()
+        logger.debug("Sending stop and clear command")
+        self.process.sendline("stop")
+        self.process.sendline("clear")
+
+    def get_state(self):
+        self.process.sendline("status")
+        self.process.expect("\( state (\w+) \)")
+        if( len(self.process.match.groups()) == 0 ):
+            return ""
+        return str(self.process.match.groups()[0], "utf-8")
 
     def add_track_mrls(self, track_list):
         self.clear_playlist()
-        for track in track_list:
-            logger.debug(f"Adding song {track}")
-            media = self.Instance.media_new(track)
-            media.parse()
-            self.MediaList.add_media(media)
-        self.MediaListPlayer.set_media_list(self.MediaList)
-        self.MediaListPlayer.set_playback_mode(vlc.PlaybackMode.default)
-        logger.debug(f"Added {len(track_list)} songs to playlist")
+        for track in sorted(track_list):
+            self.process.sendline( "enqueue " + track + "\n")
+        self.process.sendline("sort\n")
 
-    def play_pause(self):
-        if self.MediaListPlayer is None:
-            return
-        if self.MediaListPlayer.is_playing():
-            self.pause()
-        elif self.MediaListPlayer.is_playing() == False:
-            self.play()
-
-    def play(self):
-        if self.MediaList.count() > 0:
-            try:
-                self.__action_timeout(self.MediaListPlayer.play, vlc.State.Playing, 3)
-                logger.info(f"Playing.")
-            except:
-                logger.warning("Failed to play media player.")
-                self.MediaPlayer.stop()
-
-        else:
-            logger.info(f"Can't play, no media in playlist.")
-
-    def pause(self):
-        if self.MediaListPlayer.get_state() == vlc.State.Playing:
-            try:
-                self.__action_timeout(self.MediaListPlayer.pause, vlc.State.Paused, 3)
-                logger.info(f"Paused playlist")
-            except:
-                logger.warning("Failed to pause media player.")
-                self.MediaPlayer.stop()
-
-    def stop(self):
-        if self.MediaListPlayer is not None:
-            try:
-                self.__action_timeout(self.MediaListPlayer.stop, vlc.State.Stopped, 3)
-                logger.info(f"Stopped")
-            except:
-                logger.warning("Failed to stop media player.")
-                self.MediaPlayer.stop()
-
-    def next(self):
-        self.MediaListPlayer.next()
-
-    def previous(self):
-        self.MediaListPlayer.previous()
 
 @dataclass
 class Tag:
@@ -320,64 +273,13 @@ class NFCPlayer:
         self.set_app_display_mode()
 
         self.VLC = VLC()
-        self.__set_events()
         self.DB = Database()
-        # Hotkeys
-        try:
-            keyboard.add_hotkey(165,self.VLC.previous)
-            keyboard.add_hotkey(164,self.VLC.play_pause)
-            keyboard.add_hotkey(163,self.VLC.next)
-        except ImportError:
-            logger.debug("Could not add hotkeys due to not being root.")
-            pass
 
         logger.debug(f"NFC Player initialized.")
-
-    def __set_events(self):
-        MP_events = self.VLC.MediaPlayer.event_manager()
-        MP_events.event_attach(vlc.EventType.MediaPlayerPlaying, self.print_state_and_curr_track)
-        MP_events.event_attach(vlc.EventType.MediaPlayerPaused, self.print_state_and_curr_track)
-        MP_events.event_attach(vlc.EventType.MediaPlayerMediaChanged , self.print_state_and_curr_track)
-        MP_events.event_attach(vlc.EventType.MediaPlayerStopped,self.print_state_and_curr_track)
 
     def delete_last_line(self):
         sys.stdout.write('\x1b[2K')
         sys.stdout.flush()
-
-    def print_state_and_curr_track(self, event=""):
-        logger.debug(f"MediaListPlayerState: {self.VLC.MediaListPlayer.get_state()}")
-        state = ""
-        if stdoutHandler.level not in [logging.INFO, logging.DEBUG]:
-            self.delete_last_line()
-            end = "\r"
-        else:
-            end = "\n"
-
-        match self.VLC.MediaListPlayer.get_state():
-            case vlc.State.Playing:
-                state = "▶"
-            case vlc.State.Paused:
-                state = "⏸"
-            case vlc.State.Stopped | vlc.State.Ended:
-                state = "■"
-            case vlc.State.NothingSpecial:
-                state = "-"
-            case _:
-                state = "?"
-        media = self.VLC.MediaPlayer.get_media()
-        if media is None:
-            print(state, end=end)
-        else:
-            print(f"{state} {media.get_meta(0)} - {media.get_meta(1)}", end=end)
-    
-    def on_key_press(self, key):
-        match(key):
-            case keyboard.Key.HotKey.media_next:
-                self.VLC.next()
-            case keyboard.Key.HotKey.media_previous:
-                self.VLC.previous
-            case keyboard.Key.HotKey.media_play_pause:
-                self.VLC.play_pause()
 
     def quit_player(self):
         print()
@@ -387,7 +289,8 @@ class NFCPlayer:
             self.clf.close()
         logger.debug("Releasing VLC Instance")
         if self.VLC is not None:
-            self.VLC.Instance.release()
+            # self.VLC.Instance.release()
+            self.VLC.kill()
 
     def on_startup(self, targets):
         for target in targets:
@@ -438,7 +341,9 @@ class NFCPlayer:
             try:
                 logger.info("Waiting for tag...")
                 if self.clf.connect(rdwr=self.standby_options) == False:
+                    logger.debug("Could not connect to card")
                     break
+                self.VLC.pause()
             except KeyboardInterrupt:
                 print()
                 break
@@ -454,7 +359,7 @@ class NFCPlayer:
         if (self.tag.UUID is None):
             self.tag = None
             print("Tag is empty.")
-            return True
+            return False
         
         self.tag.Path = self.DB.get_path(self.tag.UUID)
         if (self.tag.Path is None):
@@ -518,7 +423,7 @@ class NFCPlayer:
             logger.debug(f"Tag: {tag}")
             self.tag = Tag(tag)
             self.tag.UUID = self.get_uuid_from_tag()
-            self.tag.Path = self.DB.get_path(self.tag.UUID)
+            self.tag.Path = self.DB.get_path(self.tag.UUID, True)
 
             if (self.tag.Path is not None):
                 print(f"Tag is already pointing to: {self.tag.Path}")
@@ -551,7 +456,7 @@ class NFCPlayer:
 
             # Check
             if ( self.tag.UUID == list(message_decoder(self.tag.Tag.ndef.octets))[0].text ) and \
-                ( self.DB.get_path(self.tag.UUID) == self.tag.Path ):
+                ( self.DB.get_path(self.tag.UUID, True) == self.tag.Path ):
                 logger.info(f"Succesfully added entry to DB: \n\t{self.tag.UUID},\n\t{self.tag.Path}")
                 print(self.success_ascii_msg)
                 print("Succesfully assigned media to tag.")
@@ -561,17 +466,19 @@ class NFCPlayer:
             return True
         except KeyboardInterrupt:
             # KeyboardInterrupt should immediately return from the on-connect callback and into the main thread, 
-            # while also signaling that
+            # while also signaling that user did not want to continue with writing the current directory (batch_mode)
+            # or writing at all. 
             self.halt = True
             return False
 
     # File ops
     def add_media_to_playlist(self, directory):
+        print(directory)
         if os.path.isfile(directory):
             self.VLC.add_track_mrls(directory)
         else:
             track_list = []
-            for file_name in sorted(os.listdir(directory)):
+            for file_name in os.listdir(directory):
                 file = os.path.join(directory, file_name)
                 if self.is_audio_track(file):
                     track_list.append(file)
@@ -616,7 +523,7 @@ class NFCPlayer:
                     continue
                 except (TclError, RuntimeError) as e:
                     self._GUI_MODE = False
-                    logger.warning(f"Could not open file dialog. Falling back to terminal only mode.")
+                    logger.info(f"Could not open file dialog. Falling back to terminal only mode.")
                     logger.debug(f"{e}")
                     directory = None
                     continue
@@ -625,7 +532,7 @@ class NFCPlayer:
                 if directory == "\n" or directory == "":
                     directory = None
                     continue
-        directory = os.path.normpath(os.path.expanduser(directory.strip().strip('\'')))
+        directory = os.path.normpath(os.path.expanduser(directory.strip().strip('\'').strip('\"')))
         logger.debug(f"Selected {directory}")
         return directory
 
@@ -702,9 +609,9 @@ parser.add_argument('-v', '--verbose',
 
 args = parser.parse_args()
 
-    
+
 def main():
-    # Set whole logger to lowest level to enable different log levenls.
+    # Set whole logger to lowest level to enable different log levels.
     # And fileHandler to verbose unless debug is enabled.
     logger.setLevel(level=logging.DEBUG)
     if args.log_level == logging.DEBUG:
@@ -714,18 +621,21 @@ def main():
     stdoutHandler.setLevel(level=args.log_level)
     clear_screen()
     logger.info('Started app')
+    try:
+        NFC_player = NFCPlayer(vars(args))
 
-    NFC_player = NFCPlayer(vars(args))
-    
-    if NFC_player.halt:
-        pass
-    elif (args.write_mode) or (args.batch_mode_dir is not None):
-        NFC_player.write_loop()
-    elif args.check_paths:
-        NFC_player.check_paths()
-    else:
-        NFC_player.play_loop()
-    
+        if NFC_player.halt:
+            pass
+        elif (args.write_mode) or (args.batch_mode_dir is not None):
+            NFC_player.write_loop()
+        elif args.check_paths:
+            NFC_player.check_paths()
+        else:
+            NFC_player.play_loop()
+    except Exception as e:
+        NFC_player.quit_player()
+        print(e)
+
     print("Bye")
     logger.info("Done")
 

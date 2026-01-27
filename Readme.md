@@ -1,81 +1,117 @@
 # NFC Player
 
-Create a physical interface for your digital media library using NFC technology.
+Allows you to create a physical interface for your digital media library using NFC technology. This lets you have instant media playback by scanning NFC tags through a simple tag-to-file or tag-to-folder association. 
 
-## Features
-- Instant media playback by scanning NFC tags
-- Simple tag-to-folder or tag-to-file association
-- Place tag on reader to play media, remove tag to stop
-- Cross platform support
-- Batch write a bunch of tags at once
-
-## Installation
+# Installation
 ```bash
 git clone [repository-url]
-cd nfc-player
-pip install -r requirements.txt
 ```
+## Write mode
 
-## Table of Contents
+### Writing tags when GUI is detected
+
+1. Run in write mode:
+
+```bash
+python nfc_player.py -w -f "~/path/to/your/media/library/"
+```
+2. Scan Tag
+
+![Image](./readme_images/write_mode.png)
+
+If program detects GUI availability you will be prompted with a directory dialog box:
+<picture><img style="width:50% !important;" src="./readme_images/select_folder.png"/></picture>
+
+Otherwise you will be asked to input directly into terminal.
+
+3. Done writing
+
+![Image](./readme_images/successfully_scanned.png)
+
+4. Continue writing or quit with CTRL+C
+
+## Batch Write Mode
+ 
+This mode allows you to quickly write to a bunch of tags.
+
+1. Prepare a file with media directories separated by newlines.
+   ```
+      /Music/Album1
+      /Music/Album2
+      /Music/Album3
+   ```
+2. Start program in quick scan mode with the ```-b``` flag followed by the location of your file.
+3. Scan tag until you see the success message.
+4. Repeat with next tag.
+
+*If you want to skip a specific directory press CTRL+C*
+
+## Playback Mode
+
+```bash
+python nfc_player.py
+```
+1. Enter playback mode and scan the tag
+
+![Image](./readme_images/playing.png)
+
+# Table of Contents
 - [NFC Player](#nfc-player)
-  - [Features](#features)
-  - [Installation](#installation)
-  - [Table of Contents](#table-of-contents)
-  - [Requirements](#requirements)
-    - [VLC Media player](#vlc-media-player)
-    - [NFC Reader \& Tags](#nfc-reader--tags)
-      - [NFC Reader](#nfc-reader)
-        - [Windows](#windows)
-      - [NFC Tags](#nfc-tags)
-        - [Tag Size Considerations](#tag-size-considerations)
-  - [Usage](#usage)
-    - [Command Line Options](#command-line-options)
-    - [Write mode](#write-mode)
-      - [Writing tags](#writing-tags)
-    - [Playback Mode](#playback-mode)
-    - [Batch Write Mode](#batch-write-mode)
-  - [Library Documentation](#library-documentation)
-    - [nfcpy](#nfcpy)
-    - [pyhton-vlc](#pyhton-vlc)
+- [Installation](#installation)
+  - [Write mode](#write-mode)
+    - [Writing tags when GUI is detected](#writing-tags-when-gui-is-detected)
+  - [Batch Write Mode](#batch-write-mode)
+  - [Playback Mode](#playback-mode)
+- [Table of Contents](#table-of-contents)
+- [Requirements](#requirements)
+  - [VLC Media player](#vlc-media-player)
+  - [NFC Reader \& Tags](#nfc-reader--tags)
+    - [NFC Reader](#nfc-reader)
+      - [Windows](#windows)
+    - [NFC Tags](#nfc-tags)
+      - [Tag Size Considerations](#tag-size-considerations)
+- [Usage](#usage)
+  - [Command Line Options](#command-line-options)
+- [Library Documentation](#library-documentation)
 
-## Requirements
+# Requirements
 
-### VLC Media player
+## VLC Media player
 
-You'll need an installation of [VLC media player](https://www.videolan.org/vlc/) in order to use this application as it uses the [python-vlc](https://wiki.videolan.org/Python_bindings/) library to interact with the media player.
+You'll need an installation of [VLC media player](https://www.videolan.org/vlc/) in order to use this application.
 
-### NFC Reader & Tags
+## NFC Reader & Tags
 
 This application makes use of the [nfcpy](https://nfcpy.readthedocs.io/en/latest/index.html) library to read and write NFC tags. 
 
-#### NFC Reader
+### NFC Reader
 
 You'll need a compatible NFC reader:
 
 - Check [*supported devices list*](https://nfcpy.readthedocs.io/en/latest/overview.html#supported-devices).
 
-##### Windows 
+#### Windows 
 
 If you're on windows you may need to install WinUSB and libusb, you can [follow the instructions in the nfcpy documentation](https://nfcpy.readthedocs.io/en/latest/topics/get-started.html?highlight=windows#installation). 
 
-#### NFC Tags
+### NFC Tags
 
 Tag compatibility depends on your reader:
 
 - Verify nfcpy's [*tag support for your reader*](https://nfcpy.readthedocs.io/en/latest/overview.html#functional-support).
 
-##### Tag Size Considerations
+#### Tag Size Considerations
 
 The response distance of your tags is proportional to the size and reader strength. The best way you can control the response distance is through tag size.
 
 - Larger tags generally have better read range
 - [Check out this video by seritag to see how distance affects reading.](https://www.youtube.com/watch?v=LELufh_XbN4)
 
-## Usage
+# Usage
 
-Scan a tag to instantly play all media files in its associated folder.
+Scan a tag to instantly play media files associated to it.
 
-### Command Line Options
+## Command Line Options
 |Flag|Description|
 |---|---|
 | -l | Location of NFC reader device. Default is "usb". |
@@ -87,60 +123,5 @@ Scan a tag to instantly play all media files in its associated folder.
 | -v | Verbose output. |
 | -d | Debug output. |
 
-### Write mode
-
-1. Prepare your media folders
-2. Run in write mode:
-
-```bash
-python nfc_player.py -w -f "~/path/to/your/media/library/"
-```
-
-3. Follow the on-screen prompts
-
-#### Writing tags
-
-Write mode involves scanning tags, and selecting a media folder.
-
-1. Scan Tag
-
-![Image](./readme_images/read_mode.png)
-
-2. Select folder
-
-![Image](./readme_images/select_folder.png)
-
-3. Done writing
-
-![Image](./readme_images/written.png)
-
-### Playback Mode
-
-```bash
-python nfc_player.py
-```
-1. Ready to Scan
-
-![Image](./readme_images/standby.png)
-
-2. Media playing 
-
-![Image](./readme_images/playing.png)
-
-### Batch Write Mode
- 
-This mode allows you to quickly write to a bunch of tags.
-
-1. Prepare a file with media directories separated by newlines.
-2. Start program in quick scan mode with the ```-b``` flag followed by the location of your file.
-3. Scan tag until you see the success message.
-4. Repeat with next tag.
-
-*If you want to skip a specific directory press __*
-
-## Library Documentation
-
-### nfcpy
-- https://nfcpy.readthedocs.io/en/latest/index.html
-### pyhton-vlc
-- https://python-vlc.readthedocs.io/en/latest/
+# Library Documentation
+- nfcpy: https://nfcpy.readthedocs.io/en/latest/index.html
