@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-import nfc, logging, os, time, uuid, sys, sqlite3, argparse, mimetypes, pexpect
+import nfc, logging, os, time, uuid, sys, sqlite3, argparse, mimetypes, pexpect, signal
 from ndef import TextRecord
 from ndef import message_decoder
 from operator import xor
@@ -142,11 +142,12 @@ class VLC:
     process = None
     def __init__(self):
         self.process = pexpect.spawn("vlc")
-    
+
     def kill(self):
         logger.debug("Sending quit command")
-        self.process.sendline("q")
-        self.process.kill(0)
+        while(self.process.isalive()):
+            self.process.terminate()
+            self.process.close()
 
     def play(self):
         logger.debug("Sending play command")
@@ -250,17 +251,20 @@ class NFCPlayer:
             'interval': 0.5,
             'beep-on-connect': False
         }
-        
+
         if self._CHECK_MODE == False:
             logger.debug(f"Looking for NFC card reader at '{location}'")
             self.clf = nfc.ContactlessFrontend()
 
-            tries = 0
-            attempt = self.clf.open(location)
-            while (attempt == False) and (tries < 6):
-                logger.debug(f"Looking for NFC card reader at '{location}'")
+            try:
+                tries = 0
                 attempt = self.clf.open(location)
-                tries += 1
+                while (attempt == False) and (tries < 6):
+                    logger.debug(f"Looking for NFC card reader at '{location}'")
+                    attempt = self.clf.open(location)
+                    tries += 1
+            except IOError:
+                attempt = False
 
             if attempt == False:
                 logger.critical(f"Did not find NFC Card Reader at path '{location}'")
@@ -269,7 +273,7 @@ class NFCPlayer:
                 self.halt = True
                 return
             logger.info("Connected to NFC reader.")
-        
+
         self.set_app_display_mode()
 
         self.VLC = VLC()
@@ -289,7 +293,6 @@ class NFCPlayer:
             self.clf.close()
         logger.debug("Releasing VLC Instance")
         if self.VLC is not None:
-            # self.VLC.Instance.release()
             self.VLC.kill()
 
     def on_startup(self, targets):
@@ -310,6 +313,7 @@ class NFCPlayer:
     # Main functionalities
     def on_release(self, event=""):
         self.VLC.pause()
+        return True
 
     def get_uuid_from_tag(self):
         if (self.tag is None) or (self.tag.Tag.is_present == False):
@@ -336,7 +340,7 @@ class NFCPlayer:
 
     def play_loop(self):
         logger.debug(f"Going into standby mode.")
-        print(f"NFC Music Player {_VERSION}, ready to play.")
+        print("Ready to play")
         while True:
             try:
                 logger.info("Waiting for tag...")
@@ -413,7 +417,6 @@ class NFCPlayer:
                 self.DB.remove_entry(self.tag.UUID)
                 logger.error(f"NDEF write failed: {str(err)}")
                 logger.error(f"You probably removed the tag before its UUID could be written.")
-        self.quit_player()
 
     def read_and_assign(self, tag):
         try:
@@ -480,7 +483,11 @@ class NFCPlayer:
             track_list = []
             for file_name in os.listdir(directory):
                 file = os.path.join(directory, file_name)
-                if self.is_audio_track(file):
+                #if self.is_playlist(file):
+                #    track_list = [file]
+                #    logger.info(f"Found playlist file {file} making that the playlist")
+                #    return
+                if (self.is_audio_track(file)) and (self.is_playlist(file) == False):
                     track_list.append(file)
             self.VLC.add_track_mrls(track_list)
             logger.info(f"Added {len(track_list)} songs to playlist")
@@ -609,6 +616,12 @@ parser.add_argument('-v', '--verbose',
 
 args = parser.parse_args()
 
+def sig_handler(signum, frame):
+    print("Stopping program")
+    logger.info("SIGTERM received, stopping execution")
+    raise Exception("SIGTERM received")
+
+signal.signal(signal.SIGTERM, sig_handler)
 
 def main():
     # Set whole logger to lowest level to enable different log levels.
@@ -620,7 +633,8 @@ def main():
         fileHandler.setLevel(level=logging.INFO)
     stdoutHandler.setLevel(level=args.log_level)
     clear_screen()
-    logger.info('Started app')
+    logger.info('')
+    logger.info(f"Started NFC Music Player {_VERSION}")
     try:
         NFC_player = NFCPlayer(vars(args))
 
@@ -633,9 +647,8 @@ def main():
         else:
             NFC_player.play_loop()
     except Exception as e:
-        NFC_player.quit_player()
-        print(e)
-
+        logger.debug(e)
+    NFC_player.quit_player()
     print("Bye")
     logger.info("Done")
 
